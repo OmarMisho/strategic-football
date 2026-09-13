@@ -1,0 +1,10 @@
+{
+  "appId": "com.strategicfootball.game",
+  "appName": "Strategic Football",
+  "webDir": "web",
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1200
+    }
+  }
+}

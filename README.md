@@ -41,7 +41,28 @@ Server listens on **http://localhost:8080**.
 > To play across the internet, run the server on any public host (e.g. a VPS) and open
 > `http://<public-ip>:8080` on the phones.
 
-### Solo practice
+## Android app
+
+The game ships as an Android app (Capacitor wrapper around the same web client).
+See [docs/PUBLISH-GUIDE.md](docs/PUBLISH-GUIDE.md) for the full release process.
+
+```bash
+# Build the Android app (requires Android SDK + Java 17)
+set SF_SERVER_URL=https://strategic-football.onrender.com   # your public server
+npm run android:build
+```
+
+- Signed release outputs: `android/app/build/outputs/bundle/release/app-release.aab`
+  (Play Store) and `.../apk/release/app-release.apk` (sideload testing).
+- The keystore lives in `keystore/` (git-ignored). **Back it up — you need it for every update.**
+- App icon source generator: `npm run icon:gen` → `resources/icon.png`.
+
+## Server deployment
+
+`render.yaml` deploys the server on Render (free tier). Push this repo to GitHub and
+use **New → Blueprint**. The health check is at `/health`.
+
+## Solo practice
 
 Tap **Play vs AI** on the main menu to try the mechanics without a server (runs fully in the browser).
 
