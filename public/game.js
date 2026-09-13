@@ -1,0 +1,722 @@
+'use strict';
+
+/* =========================================================
+ * Strategic Football client  (portrait, touch)
+ * ========================================================= */
+
+const SF = window.SFGame;
+const { GameState, FORMATIONS, distance } = SF;
+
+// ---------------- Flags ----------------
+const FLAGS = [
+  { id: 'england', name: 'England', emoji: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  { id: 'france', name: 'France', emoji: '🇫🇷' },
+  { id: 'germany', name: 'Germany', emoji: '🇩🇪' },
+  { id: 'spain', name: 'Spain', emoji: '🇪🇸' },
+  { id: 'italy', name: 'Italy', emoji: '🇮🇹' },
+  { id: 'brazil', name: 'Brazil', emoji: '🇧🇷' },
+  { id: 'argentina', name: 'Argentina', emoji: '🇦🇷' },
+  { id: 'portugal', name: 'Portugal', emoji: '🇵🇹' },
+  { id: 'netherlands', name: 'Netherlands', emoji: '🇳🇱' },
+  { id: 'egypt', name: 'Egypt', emoji: '🇪🇬' },
+  { id: 'morocco', name: 'Morocco', emoji: '🇲🇦' },
+  { id: 'saudi', name: 'Saudi Arabia', emoji: '🇸🇦' },
+  { id: 'qatar', name: 'Qatar', emoji: '🇶🇦' },
+  { id: 'usa', name: 'USA', emoji: '🇺🇸' },
+  { id: 'mexico', name: 'Mexico', emoji: '🇲🇽' },
+  { id: 'japan', name: 'Japan', emoji: '🇯🇵' },
+  { id: 'korea', name: 'South Korea', emoji: '🇰🇷' },
+  { id: 'manchester', name: 'Man United', flag: 'club', colors: ['#d81f26', '#f5f5f5', '#d81f26'] },
+  { id: 'realmadrid', name: 'Real Madrid', flag: 'club', colors: ['#f6f6f6', '#c9a25e'] },
+  { id: 'barcelona', name: 'Barcelona', flag: 'club', colors: ['#004d98', '#a50044'] },
+];
+
+const FLAG_CACHE = {};
+function flagStyleUrl(flagId) {
+  const f = FLAGS.find((x) => x.id === flagId);
+  if (!f) return null;
+  if (f.emoji) return { emoji: f.emoji };
+  const stops = f.colors.map((c, i) =>
+    `${c} ${(i / f.colors.length) * 100}% ${((i + 1) / f.colors.length) * 100}%`
+  ).join(', ');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">`
+    + `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0">${stops}</linearGradient></defs>`
+    + `<circle cx="20" cy="20" r="20" fill="url(#g)"/>`
+    + `<circle cx="20" cy="20" r="13" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="1.5"/>`
+    + `<circle cx="20" cy="20" r="8" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="1"/>`
+    + `</svg>`;
+  return { url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) };
+}
+
+function flagOf(team) {
+  const p = App.players.find((pp) => pp.team === team);
+  return p && p.flag ? p.flag : (team === 'A' ? 'england' : 'france');
+}
+
+// ---------------- App state ----------------
+const App = {
+  screen: 'home',
+  ws: null,
+  room: null,
+  player: null,
+  players: [],
+  you: null,
+
+  practice: false,
+  pGame: null,
+
+  // server-observed state
+  state: null,
+  phase: 'lobby',
+  tick: 0,
+  round: 1,
+  timerEnds: 0,
+  pRemaining: 0,
+
+  moves: {},                  // stickId -> {dx, dy}
+  pass: { type: 'keep' },
+  passMode: false,
+  submitted: false,
+  dragStick: null,
+
+  settings: (() => {
+    try { return JSON.parse(localStorage.getItem('sf_settings') || '{}'); }
+    catch (e) { return {}; }
+  })(),
+};
+
+App.settings.name = App.settings.name || '';
+App.settings.flag = App.settings.flag || 'england';
+App.settings.formation = App.settings.formation || '2-1-2';
+
+function saveSettings() {
+  localStorage.setItem('sf_settings', JSON.stringify(App.settings));
+}
+
+// ---------------- DOM helpers ----------------
+const $ = (id) => document.getElementById(id);
+const screens = { home: $('screen-home'), lobby: $('screen-lobby'), game: $('screen-game'), settings: $('screen-settings') };
+function showScreen(name) {
+  for (const k in screens) screens[k].classList.add('hidden');
+  screens[name].classList.remove('hidden');
+  App.screen = name;
+}
+
+let toastTimer = null;
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add('hidden'), 2400);
+}
+
+// ---------------- Networking ----------------
+function wsUrl() {
+  return location.origin.replace(/^http/, 'ws') + '/';
+}
+function connect(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.onopen = () => resolve(ws);
+    ws.onerror = () => reject(new Error('Connection failed'));
+  });
+}
+function wsSend(obj) {
+  if (App.ws && App.ws.readyState === WebSocket.OPEN) App.ws.send(JSON.stringify(obj));
+}
+
+async function ensureWs() {
+  if (App.ws && App.ws.readyState === WebSocket.OPEN) return true;
+  try {
+    App.ws = await connect(wsUrl());
+    App.ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
+    return true;
+  } catch (err) {
+    $('home-error').textContent = 'Cannot reach server. Start it (`npm start`) or use Play vs AI.';
+    return false;
+  }
+}
+
+function onMessage(msg) {
+  switch (msg.type) {
+    case 'joined':
+      App.room = msg.room;
+      App.player = msg.player;
+      App.players = msg.players;
+      App.you = msg.you;
+      App.phase = msg.phase;
+      renderLobby();
+      showScreen('lobby');
+      break;
+    case 'error':
+      $('home-error').textContent = msg.error;
+      break;
+    case 'plan_ack':
+      App.submitted = true;
+      updateControls();
+      break;
+    case 'state':
+      applyStateMsg(msg);
+      break;
+  }
+}
+
+function applyStateMsg(msg) {
+  App.phase = msg.phase;
+  App.tick = msg.tick;
+  App.round = msg.round;
+  App.timerEnds = msg.timerMs ? Date.now() + msg.timerMs : 0;
+  App.state = msg.state;
+  App.you = msg.you;
+  if (App.screen !== 'game') showScreen('game');
+
+  if (msg.phase === 'plan') {
+    App.submitted = false;
+    App.moves = {};
+    App.pass = { type: 'keep' };
+    App.passMode = false;
+    if (msg.lastGoal) toast(`Goal for ${msg.lastGoal}! ${msg.state.score.A}-${msg.state.score.B}`);
+  }
+  if (msg.winner) toast(winnerText(msg.winner, msg.you));
+  renderGame();
+}
+
+function winnerText(team, you) {
+  return team === you ? 'You WIN! 🏆' : `${team} team wins!`;
+}
+
+// ---------------- Lobby ----------------
+function renderLobby() {
+  $('room-code').textContent = App.room;
+  const pdiv = $('lobby-players');
+  pdiv.innerHTML = '';
+  const names = { A: 'Host (A)', B: 'Guest (B)' };
+  for (const p of App.players) {
+    const css = flagStyleUrl(p.flag || (p.team === 'A' ? 'england' : 'france'));
+    const div = document.createElement('div');
+    div.className = 'player-chip';
+    div.innerHTML = `<div class="flag-circle" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:18px;background:rgba(255,255,255,0.1)">${css.emoji || '<img src="' + css.url + '" style="width:26px;height:26px">'}</div>`
+      + `<span>${p.name || names[p.team]}</span>`
+      + `<span style="opacity:.6;font-size:12px">${names[p.team]}</span>`
+      + `<span style="margin-left:auto;font-size:16px">${p.ready ? '✅' : '🕐'}</span>`;
+    pdiv.appendChild(div);
+  }
+  const formRow = $('formation-row');
+  formRow.innerHTML = '';
+  for (const f of Object.keys(FORMATIONS)) {
+    const c = document.createElement('div');
+    c.className = 'formation-chip' + (App.settings.formation === f ? ' selected' : '');
+    c.textContent = f;
+    c.onclick = () => {
+      App.settings.formation = f;
+      saveSettings();
+      wsSend({ type: 'ready', formation: f, flag: App.settings.flag, ready: true });
+      renderLobby();
+    };
+    formRow.appendChild(c);
+  }
+  const allReady = App.players.length === 2 && App.players.every((p) => p.ready);
+  if (allReady) $('lobby-status').textContent = 'Ready — starting…';
+  else if (App.players.length < 2) $('lobby-status').textContent = 'Waiting for opponent to join…';
+  else $('lobby-status').textContent = 'Pick formation and tap Ready.';
+}
+
+// ---------------- Settings screen ----------------
+function renderSettings() {
+  $('set-name').value = App.settings.name;
+  const grid = $('flag-grid');
+  grid.innerHTML = '';
+  for (const f of FLAGS) {
+    const c = document.createElement('div');
+    c.className = 'flag-cell' + (App.settings.flag === f.id ? ' selected' : '');
+    c.title = f.name;
+    const style = flagStyleUrl(f.id);
+    c.innerHTML = `<div class="flag-circle" style="display:flex;align-items:center;justify-content:center;font-size:24px;background:rgba(255,255,255,0.08)">${style.emoji || '<img src="' + style.url + '" style="width:100%;height:100%">'}</div>`;
+    c.onclick = () => {
+      App.settings.flag = f.id;
+      saveSettings();
+      renderSettings();
+    };
+    grid.appendChild(c);
+  }
+}
+
+// ---------------- Canvas ----------------
+const canvas = $('field');
+const ctx = canvas.getContext('2d');
+let canvasW = 0, canvasH = 0, xScale = 1, yScale = 1;
+
+function resizeCanvas() {
+  const wrap = $('canvas-wrap');
+  const rw = wrap.clientWidth, rh = wrap.clientHeight;
+  const aspect = 0.92;
+  let w = rw - 4, h = rh - 4;
+  if (w / aspect > h) w = h * aspect; else h = w / aspect;
+  canvasW = w; canvasH = h;
+  canvas.width = Math.round(w * window.devicePixelRatio);
+  canvas.height = Math.round(h * window.devicePixelRatio);
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+  xScale = w; yScale = h;
+}
+const nx = (n) => n * xScale;
+const ny = (n) => n * yScale;
+
+function drawField() {
+  ctx.clearRect(0, 0, canvasW, canvasH);
+  ctx.fillStyle = '#1e8a4a';
+  ctx.fillRect(0, 0, canvasW, canvasH);
+  ctx.globalAlpha = 0.18;
+  ctx.fillStyle = '#1a7a41';
+  for (let i = 0; i < 8; i += 2) ctx.fillRect(0, (i / 8) * canvasH, canvasW, canvasH / 8);
+  ctx.globalAlpha = 1;
+
+  const lineW = Math.max(1.5, canvasW * 0.004);
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = lineW;
+  ctx.strokeRect(lineW / 2, lineW / 2, canvasW - lineW, canvasH - lineW);
+  ctx.beginPath(); ctx.moveTo(0, canvasH / 2); ctx.lineTo(canvasW, canvasH / 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(canvasW / 2, canvasH / 2, canvasH * 0.11, 0, Math.PI * 2); ctx.stroke();
+  const boxW = canvasW * 0.6, boxH = canvasH * 0.12;
+  ctx.strokeRect((canvasW - boxW) / 2, 0, boxW, boxH);
+  ctx.strokeRect((canvasW - boxW) / 2, canvasH - boxH, boxW, boxH);
+
+  const goalW = canvasW * (SF.FIELD.goalHalfWidth * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.fillRect((canvasW - goalW) / 2, 0, goalW, 8);
+  ctx.fillRect((canvasW - goalW) / 2, canvasH - 8, goalW, 8);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect((canvasW - goalW) / 2 - 3, -2, 4, 10);
+  ctx.fillRect((canvasW + goalW) / 2 - 1, -2, 4, 10);
+  ctx.fillRect((canvasW - goalW) / 2 - 3, canvasH - 8, 4, 10);
+  ctx.fillRect((canvasW + goalW) / 2 - 1, canvasH - 8, 4, 10);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+  for (const [cx, cy, a0, a1] of [[0, 0, 0, Math.PI / 2], [canvasW, 0, Math.PI / 2, Math.PI], [0, canvasH, -Math.PI / 2, 0], [canvasW, canvasH, Math.PI, Math.PI * 1.5]]) {
+    ctx.beginPath(); ctx.arc(cx, cy, lineW * 2, a0, a1); ctx.stroke();
+  }
+
+  // attack direction arrows for each half
+  ctx.font = `${Math.max(16, canvasH * 0.03)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = '#fff';
+  ctx.fillText('▲', canvasW * 0.12, canvasH * 0.06);   // Team B attacks up
+  ctx.fillText('▼', canvasW * 0.12, canvasH * 0.94);   // Team A attacks down
+  ctx.globalAlpha = 1;
+}
+
+function drawShadow(stick, me) {
+  // where does this stick plan to be?
+  let tx = stick.targetX, ty = stick.targetY;
+  const m = App.moves[stick.id];
+  if (m) { tx = stick.x + m.dx; ty = stick.y + m.dy; }
+  const moved = Math.abs(tx - stick.x) > 0.004 || Math.abs(ty - stick.y) > 0.004;
+  if (!moved) return;
+  const px = nx(stick.x), py = ny(stick.y), sx = nx(tx), sy = ny(ty);
+  const r = Math.max(13, canvasW * 0.065);
+  ctx.globalAlpha = 0.55;
+  ctx.strokeStyle = me === stick.team ? 'rgba(140,225,255,0.95)' : 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = Math.max(2, canvasW * 0.006);
+  ctx.setLineDash([6, 5]);
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(sx, sy); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.arc(sx, sy, r, 0, Math.PI * 2);
+  ctx.fillStyle = me === stick.team ? 'rgba(140,225,255,0.22)' : 'rgba(255,255,255,0.12)';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function drawStick(stick, me, isCarrier) {
+  const px = nx(stick.x), py = ny(stick.y);
+  const r = Math.max(13, canvasW * 0.065);
+  const isMe = stick.team === me;
+  drawShadow(stick, me);
+
+  // body
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(px, py, r, 0, Math.PI * 2);
+  ctx.fillStyle = isMe ? '#0f3b2a' : '#2a1740';
+  ctx.fill();
+  ctx.clip();
+  const style = flagStyleUrl(flagOf(stick.team));
+  if (style.emoji) {
+    ctx.font = `${r * 1.35}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(style.emoji, px, py + r * 0.08);
+  } else {
+    const img = FLAG_CACHE[style.url] || (FLAG_CACHE[style.url] = (() => { const i = new Image(); i.src = style.url; return i; })());
+    if (img.complete) ctx.drawImage(img, px - r, py - r, r * 2, r * 2);
+  }
+  ctx.restore();
+  ctx.beginPath();
+  ctx.arc(px, py, r, 0, Math.PI * 2);
+  ctx.lineWidth = isMe ? 3.5 : 3;
+  ctx.strokeStyle = isMe ? '#7ef0a2' : '#ff8585';
+  ctx.stroke();
+
+  // team A/B tag
+  ctx.font = `${Math.max(9, r * 0.32)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText(stick.team, px, py + r * 0.75);
+
+  // ball on carrier
+  if (isCarrier) drawBall(px, py - r - 2);
+}
+
+function drawBall(x, y) {
+  const br = Math.max(7, canvasW * 0.035);
+  ctx.beginPath(); ctx.arc(x, y, br, 0, Math.PI * 2);
+  ctx.fillStyle = '#f5f5f5'; ctx.fill();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, br * 0.45, 0, Math.PI * 2);
+  ctx.fillStyle = '#222'; ctx.fill();
+}
+
+function drawPassPreview() {
+  if (App.phase !== 'plan' || !App.state) return;
+  const me = App.you;
+  const carrier = App.state.sticks[App.state.carrier];
+  if (!carrier || carrier.team !== me) return;
+  const sel = App.pass;
+  let to = null, color = '#ffe45e';
+  if (sel.type === 'teammate') {
+    const t = App.state.sticks.find((s) => s.id === sel.targetId);
+    if (t) to = { x: t.x + (App.moves[t.id] ? App.moves[t.id].dx : 0), y: t.y + (App.moves[t.id] ? App.moves[t.id].dy : 0) };
+  } else if (sel.type === 'shoot') {
+    to = { x: 0.5, y: me === 'A' ? 1.0 : 0.0 };
+    color = '#62f0ff';
+  }
+  if (!to) return;
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(3, canvasW * 0.008);
+  ctx.setLineDash([8, 6]);
+  ctx.beginPath();
+  ctx.moveTo(nx(carrier.x), ny(carrier.y));
+  ctx.lineTo(nx(to.x), ny(to.y));
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+}
+
+function renderGame() {
+  if (!App.state) return;
+  drawField();
+  const me = App.you;
+  const carrier = App.state.sticks[App.state.carrier];
+  const sticks = App.state.sticks;
+  for (const s of sticks) if (s.team !== me) { drawStick(s, me, false); }
+  for (const s of sticks) if (s.team === me) { drawStick(s, me, s === carrier); }
+  drawBall(nx(App.state.ball.x), ny(App.state.ball.y));
+  drawPassPreview();
+
+  $('score-a').textContent = App.state.score.A;
+  $('score-b').textContent = App.state.score.B;
+  $('round-num').textContent = App.round;
+}
+
+// timer
+function updateTimer() {
+  if (App.screen !== 'game') return;
+  const label = $('phase-label');
+  let remaining = 0;
+  if (App.practice) {
+    remaining = App.pRemaining;
+    label.textContent = 'PLAN';
+  } else {
+    label.textContent = App.phase === 'plan' ? 'PLAN' : App.phase === 'ended' ? 'DONE' : 'MOVE!';
+    remaining = App.timerEnds ? Math.max(0, App.timerEnds - Date.now()) : 0;
+  }
+  $('timer-ms').textContent = Math.ceil(remaining / 1000);
+  const frac = Math.max(0, Math.min(1, remaining / 10000));
+  const fill = $('timer-fill');
+  fill.style.width = (frac * 100) + '%';
+  fill.style.background = frac < 0.25 ? '#ff5656' : frac < 0.5 ? '#ffd75e' : '#2dd46d';
+}
+
+// ---------------- Interaction ----------------
+function hitTest(x, y) {
+  const sx = x / xScale, sy = y / yScale;
+  let best = null, bd = Infinity;
+  for (const s of App.state.sticks) {
+    if (s.team !== App.you) continue;
+    const d = distance(s, { x: sx, y: sy });
+    if (d < bd) { bd = d; best = s; }
+  }
+  return bd < 0.095 ? best : null;
+}
+
+function onPointerDown(e) {
+  if (App.phase !== 'plan' || !App.state || App.submitted) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+
+  const carrier = App.state.sticks[App.state.carrier];
+  const me = App.you;
+
+  if (App.passMode) {
+    // selecting pass target / shoot
+    if (!carrier || carrier.team !== me) { App.passMode = false; return; }
+    const sx = x / xScale, sy = y / yScale;
+    let done = false;
+    for (const s of App.state.sticks) {
+      if (s.team === me && s !== carrier && distance(s, { x: sx, y: sy }) < 0.12) {
+        App.pass = { type: 'teammate', targetId: s.id };
+        done = true;
+        break;
+      }
+    }
+    if (!done) {
+      // opposite goal
+      const nearGoalRow = me === 'A' ? sy > 0.8 : sy < 0.2;
+      if (nearGoalRow && Math.abs(sx - 0.5) < 0.5) {
+        App.pass = { type: 'shoot' };
+        done = true;
+      }
+    }
+    if (!done) {
+      // tap empty space or carrier again -> keep (cycle back)
+      App.pass = { type: 'keep' };
+    }
+    App.passMode = false;
+    updateControls();
+    renderGame();
+    return;
+  }
+
+  const s = hitTest(x, y);
+  if (!s) return;
+  if (s === carrier) {
+    App.passMode = true;
+    App.pass = { type: 'keep' };
+  } else {
+    App.dragStick = s;
+    App.moves[s.id] = { dx: 0, dy: 0 };
+    App.pass = { type: 'keep' };
+    App.passMode = false;
+  }
+  updateControls();
+  renderGame();
+}
+
+function onPointerMove(e) {
+  if (!App.dragStick) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  const sx = x / xScale, sy = y / yScale;
+  const s = App.dragStick;
+  const MAX = 0.24;
+  let dx = sx - s.x, dy = sy - s.y;
+  const mag = Math.hypot(dx, dy);
+  if (mag > MAX) { dx = dx / mag * MAX; dy = dy / mag * MAX; }
+  App.moves[s.id] = { dx, dy };
+  renderGame();
+}
+
+function onPointerUp() {
+  App.dragStick = null;
+}
+
+function updateControls() {
+  const inPlan = App.phase === 'plan' && !App.submitted;
+  const carrier = App.state ? App.state.sticks[App.state.carrier] : null;
+  const me = App.you;
+  const hasAction = Object.values(App.moves).some((m) => Math.hypot(m.dx, m.dy) > 0.004) || App.pass.type !== 'keep';
+  $('btn-confirm').disabled = !inPlan || !hasAction;
+  const hint = $('hint');
+  if (!inPlan) hint.textContent = App.phase === 'ended' ? 'Game over' : 'Moving…';
+  else if (App.passMode) hint.textContent = 'Tap a teammate to pass, tap the goal to shoot.';
+  else if (carrier && carrier.team === me) {
+    hint.textContent = hasAction
+      ? 'Drag to stretch others; tap your ball-holder to pass/shoot.'
+      : 'You have the ball: tap your ball-holder to pass/shoot.';
+  } else {
+    hint.textContent = 'Drag a player to stretch. Confirm to commit.';
+  }
+}
+
+// ---------------- Practice vs AI ----------------
+let aiTimer = null;
+function stopPractice() { if (aiTimer) { clearTimeout(aiTimer); aiTimer = null; } }
+
+function aiPlan() {
+  const st = App.pGame;
+  const aiTeam = App.you === 'A' ? 'B' : 'A';
+  const plan = { moves: {}, pass: { type: 'keep' } };
+  const aiIdx = st.indexOfTeam(aiTeam);
+  for (const i of aiIdx) {
+    if (i === st.carrier) continue;
+    plan.moves[st.sticks[i].id] = { dx: (Math.random() - 0.5) * 0.4, dy: (Math.random() - 0.5) * 0.4 };
+  }
+  if (st.carrier >= 0 && st.sticks[st.carrier].team === aiTeam) {
+    const mates = aiIdx.filter((i) => i !== st.carrier);
+    if (mates.length && Math.random() < 0.65) {
+      plan.pass = { type: 'teammate', targetId: st.sticks[mates[Math.floor(Math.random() * mates.length)]].id };
+    } else {
+      plan.pass = { type: 'shoot' };
+    }
+  }
+  return plan;
+}
+
+function practiceResolve(force) {
+  if (App.pRemaining > 0 && !force) return;
+  const st = App.pGame;
+  st.applyPlan(App.you, { moves: App.moves, pass: App.pass });
+  st.applyPlan(App.you === 'A' ? 'B' : 'A', aiPlan());
+  const res = st.resolveTick();
+  App.tick++;
+  if (res.goal) {
+    App.state = App.pGame.serialize();
+    renderGame();
+    toast(`Goal for ${res.goal.team}! ${st.score.A}-${st.score.B}`);
+  }
+  const w = st.checkWinner();
+  if (w) {
+    App.state = App.pGame.serialize();
+    App.phase = 'ended';
+    renderGame();
+    updateControls();
+    toast(winnerText(w, App.you));
+    return;
+  }
+  if (App.tick >= 10) {
+    App.tick = 0;
+    App.round += 1;
+    App.pGame = new GameState(App.pGame.formationA, App.pGame.formationB);
+    App.pGame.score = Object.assign({}, st.score);
+  }
+  // next tick: reset local
+  App.moves = {};
+  App.pass = { type: 'keep' };
+  App.passMode = false;
+  App.submitted = false;
+  App.pRemaining = 10000;
+  App.phase = 'plan';
+  App.state = App.pGame.serialize();
+  renderGame();
+  updateControls();
+}
+
+function startPractice() {
+  stopPractice();
+  App.practice = true;
+  App.moves = {};
+  App.pass = { type: 'keep' };
+  App.passMode = false;
+  App.submitted = false;
+  App.tick = 0;
+  App.round = 1;
+  App.you = 'A';
+  App.phase = 'plan';
+  App.pRemaining = 10000;
+  App.players = [{ team: 'A', flag: 'england' }, { team: 'B', flag: 'brazil' }];
+  App.pGame = new GameState('2-1-2', '2-1-2');
+  App.state = App.pGame.serialize();
+  showScreen('game');
+  renderGame();
+  updateControls();
+  aiTimer = setInterval(() => {
+    if (!App.practice || App.screen !== 'game') return;
+    App.pRemaining -= 100;
+    if (App.phase === 'plan' && !App.submitted && App.pRemaining <= 0) {
+      practiceResolve(true);
+    }
+    updateTimer();
+  }, 100);
+}
+
+// ---------------- UI bindings ----------------
+function bindUI() {
+  $('btn-create').onclick = async () => {
+    $('home-error').textContent = '';
+    if (!(await ensureWs())) return;
+    wsSend({ type: 'create', name: App.settings.name || 'Host' });
+  };
+  $('btn-join').onclick = async () => {
+    $('home-error').textContent = '';
+    const code = $('join-code').value.trim().toUpperCase();
+    if (!code) { $('home-error').textContent = 'Enter a room code.'; return; }
+    if (!(await ensureWs())) return;
+    wsSend({ type: 'join', room: code, name: App.settings.name || 'Guest' });
+  };
+  $('btn-practice').onclick = () => startPractice();
+  $('btn-settings').onclick = () => { renderSettings(); showScreen('settings'); };
+  $('lobby-settings').onclick = () => { renderSettings(); showScreen('settings'); };
+  $('btn-settings-back').onclick = () => {
+    const n = $('set-name').value.trim();
+    if (n) App.settings.name = n;
+    saveSettings();
+    if (App.ws && App.ws.readyState === WebSocket.OPEN && App.room) {
+      wsSend({ type: 'ready', formation: App.settings.formation, flag: App.settings.flag, ready: true });
+      renderLobby();
+      showScreen('lobby');
+    } else {
+      showScreen('home');
+    }
+  };
+  $('btn-ready').onclick = () => {
+    if (!App.room) return;
+    wsSend({ type: 'ready', formation: App.settings.formation, flag: App.settings.flag, ready: true });
+    $('lobby-status').textContent = 'You are ready. Waiting for opponent…';
+  };
+  $('btn-confirm').onclick = () => {
+    if (!App.state || App.submitted) return;
+    App.submitted = true;
+    if (App.practice) {
+      practiceResolve(true);
+    } else {
+      wsSend({ type: 'plan', moves: App.moves, pass: App.pass });
+    }
+    updateControls();
+  };
+  $('btn-reset').onclick = () => {
+    App.moves = {};
+    App.pass = { type: 'keep' };
+    App.passMode = false;
+    App.submitted = false;
+    renderGame();
+    updateControls();
+  };
+  $('btn-home').onclick = () => {
+    stopPractice();
+    if (App.ws) { try { App.ws.close(); } catch (e) {} App.ws = null; }
+    App.room = null;
+    App.state = null;
+    App.pGame = null;
+    App.practice = false;
+    App.moves = {};
+    App.pass = { type: 'keep' };
+    showScreen('home');
+  };
+
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerUp);
+}
+
+// ---------------- main loop ----------------
+function mainLoop() {
+  resizeCanvas();
+  if (App.screen === 'game') updateTimer();
+  if (App.screen === 'game' && App.state) renderGame();
+  requestAnimationFrame(mainLoop);
+}
+
+// ---------------- init ----------------
+bindUI();
+showScreen('home');
+mainLoop();

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Strategic Football</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ===================== MAIN MENU ===================== -->
+<div id="screen-home" class="screen">
+  <div class="home-box">
+    <div class="game-title">STRATEGIC<br>FOOTBALL</div>
+    <div class="tagline">Plan. Stretch. Pass. Score.</div>
+    <button class="btn primary" id="btn-create">Create Room</button>
+    <div class="join-row">
+      <input id="join-code" placeholder="ROOM CODE" maxlength="4">
+      <button class="btn" id="btn-join">Join</button>
+    </div>
+    <button class="btn" id="btn-practice">Play vs AI</button>
+    <button class="btn secondary" id="btn-settings">Settings</button>
+    <div id="home-error" class="error"></div>
+  </div>
+</div>
+
+<!-- ===================== LOBBY ===================== -->
+<div id="screen-lobby" class="screen hidden">
+  <div class="home-box">
+    <div class="section-label">Room Code</div>
+    <div class="room-code" id="room-code">----</div>
+    <div class="tip">Share this code with a friend. Both phones join the same room.</div>
+    <div class="players" id="lobby-players"></div>
+    <div class="section-label">Your Formation</div>
+    <div class="formation-row" id="formation-row"></div>
+    <div class="section-label">Your Flag</div>
+    <div class="flag-row-hint">Tap your flag on the field below to change it in Settings.</div>
+    <button class="btn" id="lobby-settings">Settings</button>
+    <button class="btn primary" id="btn-ready">Ready</button>
+    <div id="lobby-status" class="status"></div>
+  </div>
+</div>
+
+<!-- ===================== GAME ===================== -->
+<div id="screen-game" class="screen hidden">
+  <div class="topbar">
+    <div class="score-box">
+      <span id="score-a" class="score-num">0</span>
+      <span class="score-dash">:</span>
+      <span id="score-b" class="score-num">0</span>
+    </div>
+    <div class="round-box">Round <span id="round-num">1</span>/10</div>
+    <div class="timer-box">
+      <div class="timer-label" id="phase-label">PLAN</div>
+      <div class="timer-bar"><div class="timer-fill" id="timer-fill"></div></div>
+      <div class="timer-ms" id="timer-ms">10</div>
+    </div>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="field"></canvas>
+  </div>
+
+  <div class="bottombar">
+    <div id="hint" class="hint">Drag your players to stretch. Then CONFIRM.</div>
+    <div class="ctl-row">
+      <button class="btn small" id="btn-reset">Reset</button>
+      <button class="btn secondary small" id="btn-home">Home</button>
+      <button class="btn primary small" id="btn-confirm" disabled>CONFIRM PLAN</button>
+    </div>
+    <div class="note" id="goal-note"></div>
+  </div>
+</div>
+
+<!-- ===================== SETTINGS ===================== -->
+<div id="screen-settings" class="screen hidden">
+  <div class="home-box">
+    <div class="section-label">Your Name</div>
+    <input id="set-name" maxlength="12" placeholder="Player name">
+    <div class="section-label">Choose your flag icon</div>
+    <div class="flag-grid" id="flag-grid"></div>
+    <button class="btn primary" id="btn-settings-back">Done</button>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="lib/game.js"></script>
+<script src="game.js"></script>
+</body>
+</html>

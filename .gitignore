@@ -1,0 +1,14 @@
+node_modules/
+*.log
+server.log
+server.err.log
+.DS_Store
+# Capacitor build artifact (regenerable)
+android/
+web/
+# Keystores & signing material — NEVER commit
+*.keystore
+*.jks
+capacitor.config.json
+# Env / secrets
+.env
