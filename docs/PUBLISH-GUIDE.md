@@ -8,7 +8,7 @@
 ## Rebuild process (after any code/server change)
 ```bash
 # 1) Bundle web client + inject the public server URL
-set SF_SERVER_URL=https://strategic-football.onrender.com   # or your real host
+set SF_SERVER_URL=https://<your-public-url>     # e.g. your Koyeb/Render host
 npm run web:build
 
 # 2) Copy web assets into the Android project
@@ -23,6 +23,17 @@ cd ..
 #   android/app/build/outputs/bundle/release/app-release.aab   -> upload to Play Console
 #   android/app/build/outputs/apk/release/app-release.apk      -> sideload test
 ```
+
+## Deploying the game server (free on Koyeb)
+1. Create an account at koyeb.com (GitHub sign-in).
+2. New App → "strategic-football".
+3. New Service → deploy from your `OmarMisho/strategic-football` GitHub repo.
+   - Build: **Dockerfile** (repo has one); Region: nearest your players.
+   - Instance type: **Eco** (free, always-on for a turn-based game).
+   - HTTP port: **8080**. Health check: `/health` (optional).
+4. After deploy, open `<your-url>/health` → expect `{"ok":true,...}`.
+5. Copy the URL (e.g. `https://strategic-football-abc.koyeb.app`) into `SF_SERVER_URL`
+   above and rebuild the app before uploading to Play.
 
 ## Version bumps
 Before each Play upload, in `android/app/build.gradle`:

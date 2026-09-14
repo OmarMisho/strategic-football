@@ -1,0 +1,16 @@
+node_modules
+android
+web
+keystore
+docs
+scripts
+resources
+test-e2e.js
+test-goal.js
+server.log
+server.err.log
+*.md
+Dockerfile
+render.yaml
+.dockerignore
+.git

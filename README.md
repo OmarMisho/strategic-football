@@ -59,8 +59,20 @@ npm run android:build
 
 ## Server deployment
 
-`render.yaml` deploys the server on Render (free tier). Push this repo to GitHub and
-use **New → Blueprint**. The health check is at `/health`.
+- **Koyeb (recommended, free):** connect the GitHub repo and deploy. It builds the
+  `Dockerfile`, serves HTTPS + WebSockets automatically. Set HTTP port `8080`, instance
+  type **Eco** (free), region nearest your players.
+- **Render:** `render.yaml` deploys the same server (free tier sleeps on idle).
+
+After deploying, note the HTTPS URL (e.g. `https://strategic-football-something.koyeb.app`)
+and rebuild the Android app pointing at it:
+
+```bash
+set SF_SERVER_URL=https://<your-public-url>
+npm run android:build
+```
+
+Health check: open `<your-public-url>/health` → `{"ok":true,...}`
 
 ## Solo practice
 
